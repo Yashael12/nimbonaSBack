@@ -1,12 +1,7 @@
 const express = require('express');
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
-const { createClient } = require('redis');  // ✅ fixed typo
-// const { v4: uuidv4 } = require('uuid');
-// Remove this line:
-// const { v4: uuidv4 } = require('uuid');
-
-// Add this instead:
-const { randomUUID } = require('crypto'); // built into Node.js, no install needed
+const { createClient } = require('redis');
+const { randomUUID } = require('crypto');
 
 const app = express();
 
@@ -20,18 +15,33 @@ const LIVEKIT_URL = "https://tapay-i6uqe3a6.livekit.cloud";
 const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
 
 // ─────────────────────────────────────────────
-// REDIS
+// REDIS (optional – won't crash server if unavailable)
 // ─────────────────────────────────────────────
-const redis = createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
-});
+let redis = null;
+let redisReady = false;
 
-redis.on('error', e => console.error('❌ Redis error:', e));
+try {
+  redis = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379'
+  });
 
-// Connect Redis before starting server
-redis.connect()
-  .then(() => console.log('✅ Redis connected'))
-  .catch(e => console.error('❌ Redis connect failed:', e));
+  redis.on('error', (e) => console.error('❌ Redis error:', e.message));
+  redis.on('connect', () => console.log('✅ Redis connected'));
+
+  redis.connect().catch(e => {
+    console.error('❌ Redis connect failed:', e.message);
+    redisReady = false;
+    redis = null;
+  });
+} catch(e) {
+  console.error('❌ Redis initialisation failed:', e.message);
+  redis = null;
+}
+
+// Helper to check Redis availability
+function isRedisReady() {
+  return redis && redis.isOpen;
+}
 
 // ─────────────────────────────────────────────
 // REDIS KEY HELPERS
@@ -55,30 +65,31 @@ async function createToken({ identity, room, canPublish = false, canSubscribe = 
 // GET /match?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
 app.get('/match', async (req, res) => {
+  if (!isRedisReady()) {
+    return res.status(503).json({ error: 'Matchmaking temporarily unavailable (Redis down)' });
+  }
+
   const identity  = req.query.identity  || `user_${randomUUID()}`;
   const audioOnly = req.query.audioOnly === 'true';
   const key       = queueKey(audioOnly);
 
   try {
-    // ── 1. Try to pop a waiting user from queue ──
     const waitingRaw = await redis.lPop(key);
 
     if (waitingRaw) {
       const waiting = JSON.parse(waitingRaw);
 
-      // Don't match with yourself (edge case on reconnect)
       if (waiting.identity === identity) {
-        await redis.lPush(key, waitingRaw); // put back
+        await redis.lPush(key, waitingRaw);
       } else {
         const room   = `call_${randomUUID()}`;
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
-        const token2 = await createToken({ identity,                   room, canPublish: true, canSubscribe: true });
+        const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
 
-        // Write result for the waiting user to pick up
         await redis.set(
           matchKey(waiting.identity),
           JSON.stringify({ token: token1, room, matched: true }),
-          { EX: 60 }  // auto-expire after 60s if not picked up
+          { EX: 60 }
         );
 
         console.log(`✅ Matched: ${waiting.identity} ↔ ${identity} → ${room}`);
@@ -86,20 +97,17 @@ app.get('/match', async (req, res) => {
       }
     }
 
-    // ── 2. No match yet — push self to queue ──
     await redis.rPush(key, JSON.stringify({
       identity,
       audioOnly,
       joinedAt: Date.now()
     }));
 
-    // ── 3. Poll Redis every 600ms for up to 30s ──
     const TIMEOUT  = 30_000;
     const INTERVAL = 600;
     const deadline = Date.now() + TIMEOUT;
-    let   resolved = false;
+    let resolved = false;
 
-    // If client disconnects early, remove from queue
     req.on('close', async () => {
       if (resolved) return;
       resolved = true;
@@ -115,8 +123,7 @@ app.get('/match', async (req, res) => {
 
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, INTERVAL));
-
-      if (resolved) return; // client already disconnected
+      if (resolved) return;
 
       const resultRaw = await redis.get(matchKey(identity));
       if (resultRaw) {
@@ -127,7 +134,6 @@ app.get('/match', async (req, res) => {
       }
     }
 
-    // ── 4. Timed out — remove from queue ──
     if (!resolved) {
       resolved = true;
       const items = await redis.lRange(key, 0, -1);
@@ -152,6 +158,10 @@ app.get('/match', async (req, res) => {
 // GET /cancelMatch?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
 app.get('/cancelMatch', async (req, res) => {
+  if (!isRedisReady()) {
+    return res.status(503).json({ error: 'Matchmaking temporarily unavailable (Redis down)' });
+  }
+
   const { identity, audioOnly } = req.query;
   if (!identity) return res.status(400).json({ error: 'identity required' });
 
@@ -178,6 +188,10 @@ app.get('/cancelMatch', async (req, res) => {
 // GET /queueStatus
 // ─────────────────────────────────────────────
 app.get('/queueStatus', async (req, res) => {
+  if (!isRedisReady()) {
+    return res.json({ totalWaiting: 0, video: [], audio: [], redis: false });
+  }
+
   try {
     const [video, audio] = await Promise.all([
       redis.lRange(QUEUE_VIDEO, 0, -1),
@@ -256,21 +270,21 @@ app.get('/getCallToken', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ACTIVE PUBLIC STREAMS
+// ACTIVE PUBLIC STREAMS — FIXED BigInt serialization
 // GET /activeStreams
 // ─────────────────────────────────────────────
 app.get('/activeStreams', async (req, res) => {
   try {
-    const rooms   = await roomService.listRooms();
+    const rooms = await roomService.listRooms();
     const streams = rooms
       .filter(r => r.name.startsWith("live_") && r.numParticipants > 0)
       .map(r => ({
-        room:         r.name,
+        room: r.name,
         participants: r.numParticipants,
-        createdAt:    r.creationTime || null
+        // Convert BigInt to Number (safe for timestamps up to 9e15)
+        createdAt: r.creationTime ? Number(r.creationTime) : null
       }));
     res.json({ streams });
-
   } catch (e) {
     console.error("❌ ACTIVE STREAMS ERROR:", e);
     res.status(500).json({ error: e.message });
@@ -300,7 +314,7 @@ Endpoints:
   GET /getToken           → livestream host token
   GET /getViewerToken     → livestream viewer token
   GET /getCallToken       → private call token
-  GET /activeStreams       → list live public streams
+  GET /activeStreams      → list live public streams
   GET /                   → health check
   `);
 });
