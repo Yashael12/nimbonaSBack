@@ -44,10 +44,10 @@ const matchKey = (identity)  => `match:${identity}`;
 // ─────────────────────────────────────────────
 // TOKEN HELPER
 // ─────────────────────────────────────────────
-function createToken({ identity, room, canPublish = false, canSubscribe = true }) {
+async function createToken({ identity, room, canPublish = false, canSubscribe = true }) {
   const at = new AccessToken(API_KEY, API_SECRET, { identity });
   at.addGrant({ roomJoin: true, room, canPublish, canSubscribe });
-  return at.toJwt();
+  return await at.toJwt();
 }
 
 // ─────────────────────────────────────────────
