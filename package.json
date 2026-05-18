@@ -11,6 +11,8 @@
   "license": "ISC",
   "dependencies": {
     "express": "^5.2.1",
-    "livekit-server-sdk": "^2.15.2"
+    "livekit-server-sdk": "^2.15.3",
+    "redis": "^5.12.1",
+    "uuid": "^14.0.0"
   }
 }
