@@ -13,8 +13,8 @@ const app = express();
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
-const API_KEY     = "YOUR_API_KEY";
-const API_SECRET  = "YOUR_API_SECRET";
+const API_KEY     = "APIPX7aADrTbSYv";
+const API_SECRET  = "9e7pjI9Nd3XieaCAPDrBovReC7seJDeWWYhnCJkitd0D";
 const LIVEKIT_URL = "https://tapay-i6uqe3a6.livekit.cloud";
 
 const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
