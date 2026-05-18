@@ -71,8 +71,8 @@ app.get('/match', async (req, res) => {
         await redis.lPush(key, waitingRaw); // put back
       } else {
         const room   = `call_${randomUUID()}`;
-        const token1 = createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
-        const token2 = createToken({ identity,                   room, canPublish: true, canSubscribe: true });
+        const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
+        const token2 = await createToken({ identity,                   room, canPublish: true, canSubscribe: true });
 
         // Write result for the waiting user to pick up
         await redis.set(
@@ -204,7 +204,7 @@ app.get('/getToken', async (req, res) => {
 
     if (!room.startsWith("live_")) room = `live_${room}`;
 
-    const token = createToken({ identity, room, canPublish: true, canSubscribe: true });
+    const token = await createToken({ identity, room, canPublish: true, canSubscribe: true });
     res.json({ token, room });
 
   } catch (e) {
@@ -225,7 +225,7 @@ app.get('/getViewerToken', async (req, res) => {
     if (!room)                     return res.status(400).json({ error: "room is required" });
     if (!room.startsWith("live_")) return res.status(403).json({ error: "Not a livestream room" });
 
-    const token = createToken({ identity, room, canPublish: false, canSubscribe: true });
+    const token = await createToken({ identity, room, canPublish: false, canSubscribe: true });
     res.json({ token });
 
   } catch (e) {
@@ -246,7 +246,7 @@ app.get('/getCallToken', async (req, res) => {
     if (!room)                     return res.status(400).json({ error: "room is required" });
     if (!room.startsWith("call_")) room = `call_${room}`;
 
-    const token = createToken({ identity, room, canPublish: true, canSubscribe: true });
+    const token = await createToken({ identity, room, canPublish: true, canSubscribe: true });
     res.json({ token, room });
 
   } catch (e) {
