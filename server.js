@@ -1,7 +1,12 @@
 const express = require('express');
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 const { createClient } = require('redis');  // ✅ fixed typo
-const { v4: uuidv4 } = require('uuid');
+// const { v4: uuidv4 } = require('uuid');
+// Remove this line:
+// const { v4: uuidv4 } = require('uuid');
+
+// Add this instead:
+const { randomUUID } = require('crypto'); // built into Node.js, no install needed
 
 const app = express();
 
@@ -50,7 +55,7 @@ function createToken({ identity, room, canPublish = false, canSubscribe = true }
 // GET /match?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
 app.get('/match', async (req, res) => {
-  const identity  = req.query.identity  || `user_${uuidv4()}`;
+  const identity  = req.query.identity  || `user_${randomUUID()}`;
   const audioOnly = req.query.audioOnly === 'true';
   const key       = queueKey(audioOnly);
 
@@ -65,7 +70,7 @@ app.get('/match', async (req, res) => {
       if (waiting.identity === identity) {
         await redis.lPush(key, waitingRaw); // put back
       } else {
-        const room   = `call_${uuidv4()}`;
+        const room   = `call_${randomUUID()}`;
         const token1 = createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
         const token2 = createToken({ identity,                   room, canPublish: true, canSubscribe: true });
 
