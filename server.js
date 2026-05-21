@@ -80,7 +80,7 @@ app.get('/match', async (req, res) => {
       const waiting = JSON.parse(waitingRaw);
 
       if (waiting.identity === identity) {
-        await redis.lPush(key, waitingRaw);
+        await redis.rPush(key, waitingRaw);
       } else {
         const room   = `call_${randomUUID()}`;
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
@@ -89,7 +89,7 @@ app.get('/match', async (req, res) => {
         await redis.set(
           matchKey(waiting.identity),
           JSON.stringify({ token: token1, room, matched: true }),
-          { EX: 60 }
+          { EX: 120 }
         );
 
         console.log(`✅ Matched: ${waiting.identity} ↔ ${identity} → ${room}`);
