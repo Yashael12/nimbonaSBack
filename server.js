@@ -383,6 +383,12 @@ async function sweepGhostRooms() {
 sweepGhostRooms();
 setInterval(sweepGhostRooms, 2 * 60 * 1000);
 // ─────────────────────────────────────────────
+// WAKES UP THE SERVER (prevents cold start on platforms like Heroku)
+// ─────────────────────────────────────────────
+app.get('/ping', (req, res) => {
+  res.json({ ok: true });
+});
+// ─────────────────────────────────────────────
 // HEALTH CHECK
 // ─────────────────────────────────────────────
 app.get('/', (req, res) => {
