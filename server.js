@@ -4,6 +4,7 @@ const { createClient } = require('redis');
 const { randomUUID } = require('crypto');
 
 const app = express();
+app.use(express.json()); // needed for POST body parsing
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -291,7 +292,73 @@ app.get('/activeStreams', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
+// ─────────────────────────────────────────────
+// DELETE ROOM — called by app on crash/exit
+// POST /deleteRoom?room=call_xxx
+// ─────────────────────────────────────────────
+app.post('/deleteRoom', async (req, res) => {
+  const room = req.query.room || req.body?.room;
+  if (!room) return res.status(400).json({ error: 'room required' });
+ 
+  if (!room.startsWith('call_') && !room.startsWith('live_')) {
+    return res.status(403).json({ error: 'Not allowed' });
+  }
+ 
+  try {
+    await roomService.deleteRoom(room);
+    console.log(`🗑️  Room deleted on app exit: ${room}`);
+    res.json({ deleted: true, room });
+  } catch (e) {
+    // Already gone — treat as success
+    console.warn(`⚠️  deleteRoom (already gone?): ${room} — ${e.message}`);
+    res.json({ deleted: true, room, note: 'already gone' });
+  }
+});
+ 
+// ─────────────────────────────────────────────
+// REMOVE PARTICIPANT — kick a specific identity
+// POST /removeParticipant?room=call_xxx&identity=yyy
+// ─────────────────────────────────────────────
+app.post('/removeParticipant', async (req, res) => {
+  const room     = req.query.room     || req.body?.room;
+  const identity = req.query.identity || req.body?.identity;
+  if (!room || !identity) return res.status(400).json({ error: 'room and identity required' });
+ 
+  try {
+    await roomService.removeParticipant(room, identity);
+    console.log(`👟 Kicked ${identity} from ${room}`);
+    res.json({ removed: true });
+  } catch (e) {
+    console.warn(`⚠️  removeParticipant: ${e.message}`);
+    res.json({ removed: true, note: 'already gone' });
+  }
+});
+// ─────────────────────────────────────────────
+// GHOST ROOM SWEEPER
+// Every 2 min: delete any call_ room with 0 participants
+// This catches crashes the app never reported
+// ─────────────────────────────────────────────
+async function sweepGhostRooms() {
+  try {
+    const rooms  = await roomService.listRooms();
+    const ghosts = rooms.filter(r =>
+      r.name.startsWith('call_') && Number(r.numParticipants) === 0
+    );
+    for (const r of ghosts) {
+      await roomService.deleteRoom(r.name);
+      console.log(`🧹 Swept ghost room: ${r.name}`);
+    }
+    if (ghosts.length > 0) {
+      console.log(`🧹 Swept ${ghosts.length} ghost room(s)`);
+    }
+  } catch (e) {
+    console.error('❌ sweepGhostRooms error:', e.message);
+  }
+}
+ 
+// Run once on startup then every 2 minutes
+sweepGhostRooms();
+setInterval(sweepGhostRooms, 2 * 60 * 1000);
 // ─────────────────────────────────────────────
 // HEALTH CHECK
 // ─────────────────────────────────────────────
