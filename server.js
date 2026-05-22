@@ -66,67 +66,87 @@ async function createToken({ identity, room, canPublish = false, canSubscribe = 
 // MATCH — random 1-on-1 call
 // GET /match?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// MATCH — random 1-on-1 call
+// GET /match?identity=xxx&audioOnly=false
+// ─────────────────────────────────────────────
 app.get('/match', async (req, res) => {
   if (!isRedisReady()) {
     return res.status(503).json({ error: 'Matchmaking temporarily unavailable (Redis down)' });
   }
-
+ 
   const identity  = req.query.identity  || `user_${randomUUID()}`;
   const audioOnly = req.query.audioOnly === 'true';
   const key       = queueKey(audioOnly);
-
+ 
   try {
     const waitingRaw = await redis.lPop(key);
-
+ 
     if (waitingRaw) {
       const waiting = JSON.parse(waitingRaw);
-
+ 
       if (waiting.identity === identity) {
+        // FIX: same device — put entry back, do NOT fall through to re-queue self
         await redis.rPush(key, waitingRaw);
+        // intentionally falls through to the duplicate-check below
       } else {
+        // Different user — create room and match immediately
         const room   = `call_${randomUUID()}`;
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
         const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
-        await redis.set(roomKey(room),'2',{ EX: 600 });
+        await redis.set(roomKey(room), '2', { EX: 600 });
         await redis.set(
           matchKey(waiting.identity),
           JSON.stringify({ token: token1, room, matched: true }),
           { EX: 120 }
         );
-
         console.log(`✅ Matched: ${waiting.identity} ↔ ${identity} → ${room}`);
         return res.json({ token: token2, room, matched: true });
       }
     }
-
-    await redis.rPush(key, JSON.stringify({
-      identity,
-      audioOnly,
-      joinedAt: Date.now()
-    }));
-
+ 
+    // FIX: check if this identity is already in the queue before adding
+    // prevents duplicate entries from retries, skips, or race conditions
+    const existing      = await redis.lRange(key, 0, -1);
+    const alreadyQueued = existing.some(item => JSON.parse(item).identity === identity);
+ 
+    if (!alreadyQueued) {
+      await redis.rPush(key, JSON.stringify({
+        identity,
+        audioOnly,
+        joinedAt: Date.now()
+      }));
+      console.log(`🔍 Queued: ${identity} (audioOnly=${audioOnly})`);
+    } else {
+      console.log(`⚠️  Already queued: ${identity} — skipping duplicate push`);
+    }
+ 
     const TIMEOUT  = 30_000;
     const INTERVAL = 600;
     const deadline = Date.now() + TIMEOUT;
-    let resolved = false;
-
+    let resolved   = false;
+ 
     req.on('close', async () => {
       if (resolved) return;
       resolved = true;
-      const items = await redis.lRange(key, 0, -1);
-      for (const item of items) {
-        if (JSON.parse(item).identity === identity) {
-          await redis.lRem(key, 1, item);
-          break;
+      try {
+        const items = await redis.lRange(key, 0, -1);
+        for (const item of items) {
+          if (JSON.parse(item).identity === identity) {
+            await redis.lRem(key, 1, item);
+            break;
+          }
         }
+        console.log(`📴 Client disconnected: ${identity} removed from queue`);
+      } catch (e) {
+        console.error('❌ cleanup on close error:', e.message);
       }
-      console.log(`📴 Client disconnected: ${identity} removed from queue`);
     });
-
+ 
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, INTERVAL));
       if (resolved) return;
-
+ 
       const resultRaw = await redis.get(matchKey(identity));
       if (resultRaw) {
         resolved = true;
@@ -135,26 +155,29 @@ app.get('/match', async (req, res) => {
         return res.json(JSON.parse(resultRaw));
       }
     }
-
+ 
     if (!resolved) {
       resolved = true;
-      const items = await redis.lRange(key, 0, -1);
-      for (const item of items) {
-        if (JSON.parse(item).identity === identity) {
-          await redis.lRem(key, 1, item);
-          break;
+      try {
+        const items = await redis.lRange(key, 0, -1);
+        for (const item of items) {
+          if (JSON.parse(item).identity === identity) {
+            await redis.lRem(key, 1, item);
+            break;
+          }
         }
+      } catch (e) {
+        console.error('❌ cleanup on timeout error:', e.message);
       }
       console.log(`⏰ Match timeout: ${identity}`);
       return res.status(408).json({ error: 'No match found, try again' });
     }
-
+ 
   } catch (e) {
     console.error('❌ /match error:', e);
     res.status(500).json({ error: e.message });
   }
 });
-
 // ─────────────────────────────────────────────
 // CANCEL MATCH
 // GET /cancelMatch?identity=xxx&audioOnly=false
