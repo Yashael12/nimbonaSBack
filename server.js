@@ -50,6 +50,7 @@ const QUEUE_VIDEO = 'queue:video';
 const QUEUE_AUDIO = 'queue:audio';
 const queueKey = (audioOnly) => audioOnly ? QUEUE_AUDIO : QUEUE_VIDEO;
 const matchKey = (identity)  => `match:${identity}`;
+const roomKey = (room)        => `room:${room}`;
 
 // ─────────────────────────────────────────────
 // TOKEN HELPER
@@ -85,7 +86,7 @@ app.get('/match', async (req, res) => {
         const room   = `call_${randomUUID()}`;
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
         const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
-
+        await redis.set(roomKey(room),'2',{ EX: 600 });
         await redis.set(
           matchKey(waiting.identity),
           JSON.stringify({ token: token1, room, matched: true }),
