@@ -239,18 +239,22 @@ app.get('/queueStatus', async (req, res) => {
 app.get('/getToken', async (req, res) => {
   try {
     const identity = req.query.identity || `host_${Date.now()}`;
-        const title    = req.query.title    || "";          // ← add this
+    const title    = req.query.title    || "";
     let room       = req.query.room     || `live_${Date.now()}`;
 
+    console.log(`📝 getToken - room: ${room}, title: "${title}"`);  // ← add
+
     if (!room.startsWith("live_")) room = `live_${room}`;
-    // Store title in Redis so /activeStreams can return it
-    if (isRedisReady()) {                               // ← add this block
+
+    if (isRedisReady()) {
       await redis.set(`title:${room}`, title, { EX: 86400 });
+      console.log(`✅ Title saved to Redis: title:${room} = "${title}"`);  // ← add
+    } else {
+      console.log(`❌ Redis not ready — title not saved`);  // ← add
     }
 
     const token = await createToken({ identity, room, canPublish: true, canSubscribe: true });
     res.json({ token, room });
-
   } catch (e) {
     console.error("❌ HOST TOKEN ERROR:", e);
     res.status(500).json({ error: e.message });
