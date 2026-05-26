@@ -389,6 +389,8 @@ app.post('/removeParticipant', async (req, res) => {
     res.json({ removed: true, note: 'already gone' });
   }
 });
+
+
 // ─────────────────────────────────────────────
 // GHOST ROOM SWEEPER
 // Every 2 min: delete any call_ room with 0 participants
