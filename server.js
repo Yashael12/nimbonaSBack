@@ -306,7 +306,11 @@ app.get('/getCallToken', async (req, res) => {
 app.get('/activeStreams', async (req, res) => {
   try {
     const rooms = await roomService.listRooms();
-   // Fetch all titles from Redis in parallel         // ← replace the .map()
+    
+    const liveRooms = rooms.filter(r =>          // ← this line is missing
+      r.name.startsWith("live_") && r.numParticipants > 0
+    );
+
     const streams = await Promise.all(
       liveRooms.map(async (r) => {
         const title = isRedisReady()
@@ -315,7 +319,7 @@ app.get('/activeStreams', async (req, res) => {
         return {
           room: r.name,
           participants: r.numParticipants,
-          title,                                       // ← new field
+          title,
           createdAt: r.creationTime ? Number(r.creationTime) : null
         };
       })
