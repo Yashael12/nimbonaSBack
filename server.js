@@ -241,25 +241,29 @@ app.get('/queueStatus', async (req, res) => {
 // ─────────────────────────────────────────────
 app.get('/getToken', async (req, res) => {
   try {
-    const identity = req.query.identity || `host_${Date.now()}`;
-    const title    = req.query.title    || "";
-     const coverImage = req.query.coverImage || "";   // ← add this line first
-    let room       = req.query.room     || `live_${Date.now()}`;
-
-    console.log(`📝 getToken - room: ${room}, title: "${title}"`);  // ← add
+    const identity   = req.query.identity   || `host_${Date.now()}`;
+    const title      = req.query.title      || "";
+    const coverImage = req.query.coverImage || "";
+    let room         = req.query.room       || `live_${Date.now()}`;
 
     if (!room.startsWith("live_")) room = `live_${room}`;
 
     if (isRedisReady()) {
       await redis.set(`title:${room}`, title, { EX: 86400 });
-      console.log(`✅ Title saved to Redis: title:${room} = "${title}"`);  // ← add
-         await redis.set(`cover:${room}`,      coverImage, { EX: 86400 });  // ← add
-    } else {
-      console.log(`❌ Redis not ready — title not saved`);  // ← add
+      console.log(`✅ Title saved: title:${room} = "${title}"`);
+
+      // ✅ Only save cover if one was passed — don't overwrite the upload
+      if (coverImage) {
+        await redis.set(`cover:${room}`, coverImage, { EX: 86400 });
+        console.log(`✅ Cover saved: cover:${room} = "${coverImage}"`);
+      } else {
+        console.log(`ℹ️  No coverImage in getToken — keeping existing Redis value`);
+      }
     }
 
     const token = await createToken({ identity, room, canPublish: true, canSubscribe: true });
     res.json({ token, room });
+
   } catch (e) {
     console.error("❌ HOST TOKEN ERROR:", e);
     res.status(500).json({ error: e.message });
@@ -439,14 +443,21 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Upload cover image ──────────────────────
 // POST /uploadCover?room=live_xxx
-app.post('/uploadCover', upload.single('cover'), (req, res) => {
+app.post('/uploadCover', upload.single('cover'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file' });
 
+        const room = req.query.room;
         const host = `${req.protocol}://${req.get('host')}`;
         const url  = `${host}/uploads/${req.file.filename}`;
 
-        console.log(`🖼️  Cover uploaded for ${req.query.room}: ${url}`);
+        // ✅ Save cover URL to Redis immediately on upload
+        if (room && isRedisReady()) {
+            await redis.set(`cover:${room}`, url, { EX: 86400 });
+            console.log(`✅ Cover saved to Redis: cover:${room} = "${url}"`);
+        }
+
+        console.log(`🖼️  Cover uploaded for ${room}: ${url}`);
         res.json({ url });
 
     } catch (e) {
