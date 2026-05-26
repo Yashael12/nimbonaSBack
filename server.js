@@ -311,15 +311,20 @@ app.get('/activeStreams', async (req, res) => {
   try {
     const rooms = await roomService.listRooms();
     
-    const liveRooms = rooms.filter(r =>          // ← this line is missing
+    const liveRooms = rooms.filter(r =>
       r.name.startsWith("live_") && r.numParticipants > 0
     );
+
+    console.log(`📡 Live rooms: ${liveRooms.map(r => r.name)}`); // ← add
 
     const streams = await Promise.all(
       liveRooms.map(async (r) => {
         const title = isRedisReady()
           ? (await redis.get(`title:${r.name}`)) || ""
           : "";
+        
+        console.log(`🏷️  Room: ${r.name}, Title: "${title}"`); // ← add
+        
         return {
           room: r.name,
           participants: r.numParticipants,
@@ -329,6 +334,7 @@ app.get('/activeStreams', async (req, res) => {
       })
     );
 
+    console.log(`📤 Sending streams:`, JSON.stringify(streams)); // ← add
     res.json({ streams });
   } catch (e) {
     console.error("❌ ACTIVE STREAMS ERROR:", e);
