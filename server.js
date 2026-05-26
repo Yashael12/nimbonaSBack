@@ -239,9 +239,14 @@ app.get('/queueStatus', async (req, res) => {
 app.get('/getToken', async (req, res) => {
   try {
     const identity = req.query.identity || `host_${Date.now()}`;
+        const title    = req.query.title    || "";          // ← add this
     let room       = req.query.room     || `live_${Date.now()}`;
 
     if (!room.startsWith("live_")) room = `live_${room}`;
+    // Store title in Redis so /activeStreams can return it
+    if (isRedisReady()) {                               // ← add this block
+      await redis.set(`title:${room}`, title, { EX: 86400 });
+    }
 
     const token = await createToken({ identity, room, canPublish: true, canSubscribe: true });
     res.json({ token, room });
@@ -301,14 +306,21 @@ app.get('/getCallToken', async (req, res) => {
 app.get('/activeStreams', async (req, res) => {
   try {
     const rooms = await roomService.listRooms();
-    const streams = rooms
-      .filter(r => r.name.startsWith("live_") && r.numParticipants > 0)
-      .map(r => ({
-        room: r.name,
-        participants: r.numParticipants,
-        // Convert BigInt to Number (safe for timestamps up to 9e15)
-        createdAt: r.creationTime ? Number(r.creationTime) : null
-      }));
+   // Fetch all titles from Redis in parallel         // ← replace the .map()
+    const streams = await Promise.all(
+      liveRooms.map(async (r) => {
+        const title = isRedisReady()
+          ? (await redis.get(`title:${r.name}`)) || ""
+          : "";
+        return {
+          room: r.name,
+          participants: r.numParticipants,
+          title,                                       // ← new field
+          createdAt: r.creationTime ? Number(r.creationTime) : null
+        };
+      })
+    );
+
     res.json({ streams });
   } catch (e) {
     console.error("❌ ACTIVE STREAMS ERROR:", e);
