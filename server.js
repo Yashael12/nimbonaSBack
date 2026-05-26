@@ -2,6 +2,9 @@ const express = require('express');
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 const { createClient } = require('redis');
 const { randomUUID } = require('crypto');
+const multer = require('multer');
+const path   = require('path');
+const fs     = require('fs');
 
 const app = express();
 app.use(express.json()); // needed for POST body parsing
@@ -249,6 +252,7 @@ app.get('/getToken', async (req, res) => {
     if (isRedisReady()) {
       await redis.set(`title:${room}`, title, { EX: 86400 });
       console.log(`✅ Title saved to Redis: title:${room} = "${title}"`);  // ← add
+         await redis.set(`cover:${room}`,      coverImage, { EX: 86400 });  // ← add
     } else {
       console.log(`❌ Redis not ready — title not saved`);  // ← add
     }
@@ -322,6 +326,8 @@ app.get('/activeStreams', async (req, res) => {
         const title = isRedisReady()
           ? (await redis.get(`title:${r.name}`)) || ""
           : "";
+          const cover = isRedisReady()
+      ? (await redis.get(`cover:${r.name}`)) || "" : "";  // ← add
         
         console.log(`🏷️  Room: ${r.name}, Title: "${title}"`); // ← add
         
@@ -329,6 +335,7 @@ app.get('/activeStreams', async (req, res) => {
           room: r.name,
           participants: r.numParticipants,
           title,
+            cover,
           createdAt: r.creationTime ? Number(r.creationTime) : null
         };
       })
@@ -404,7 +411,46 @@ async function sweepGhostRooms() {
     console.error('❌ sweepGhostRooms error:', e.message);
   }
 }
- 
+
+
+// Store covers in /uploads folder
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = path.join(__dirname, 'uploads');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        const room = req.query.room || `cover_${Date.now()}`;
+        cb(null, `${room}.jpg`);
+    }
+});
+
+const upload = multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 }  // 5MB max
+});
+
+// Serve uploaded images statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ── Upload cover image ──────────────────────
+// POST /uploadCover?room=live_xxx
+app.post('/uploadCover', upload.single('cover'), (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file' });
+
+        const host = `${req.protocol}://${req.get('host')}`;
+        const url  = `${host}/uploads/${req.file.filename}`;
+
+        console.log(`🖼️  Cover uploaded for ${req.query.room}: ${url}`);
+        res.json({ url });
+
+    } catch (e) {
+        console.error('❌ uploadCover error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
 // Run once on startup then every 2 minutes
 sweepGhostRooms();
 setInterval(sweepGhostRooms, 2 * 60 * 1000);
