@@ -243,6 +243,7 @@ app.get('/getToken', async (req, res) => {
   try {
     const identity = req.query.identity || `host_${Date.now()}`;
     const title    = req.query.title    || "";
+     const coverImage = req.query.coverImage || "";   // ← add this line first
     let room       = req.query.room     || `live_${Date.now()}`;
 
     console.log(`📝 getToken - room: ${room}, title: "${title}"`);  // ← add
