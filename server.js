@@ -452,18 +452,21 @@ async function sweepGhostRooms() {
   try {
     const rooms  = await roomService.listRooms();
     const ghosts = rooms.filter(r =>
-      r.name.startsWith('call_') && Number(r.numParticipants) === 0
+      (r.name.startsWith('call_') || r.name.startsWith('live_')) &&
+      Number(r.numParticipants) === 0
     );
     for (const r of ghosts) {
       await roomService.deleteRoom(r.name);
+      if (isRedisReady()) await redis.del(`product:${r.name}`);
       console.log(`🧹 Swept ghost room: ${r.name}`);
     }
-    if (ghosts.length > 0) console.log(`🧹 Swept ${ghosts.length} ghost room(s)`);
+    if (ghosts.length > 0) {
+      console.log(`🧹 Swept ${ghosts.length} ghost room(s)`);
+    }
   } catch (e) {
     console.error('❌ sweepGhostRooms error:', e.message);
   }
 }
-
 // ─────────────────────────────────────────────
 // COVER UPLOAD
 // POST /uploadCover?room=live_xxx
