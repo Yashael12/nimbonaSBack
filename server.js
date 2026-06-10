@@ -7,7 +7,7 @@ const path   = require('path');
 const fs     = require('fs');
 
 const app = express();
-app.use(express.json()); // needed for POST body parsing
+app.use(express.json());
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -19,22 +19,16 @@ const LIVEKIT_URL = "https://tapay-i6uqe3a6.livekit.cloud";
 const roomService = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
 
 // ─────────────────────────────────────────────
-// REDIS (optional – won't crash server if unavailable)
+// REDIS
 // ─────────────────────────────────────────────
 let redis = null;
-let redisReady = false;
 
 try {
-  redis = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'
-  });
-
+  redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
   redis.on('error', (e) => console.error('❌ Redis error:', e.message));
   redis.on('connect', () => console.log('✅ Redis connected'));
-
   redis.connect().catch(e => {
     console.error('❌ Redis connect failed:', e.message);
-    redisReady = false;
     redis = null;
   });
 } catch(e) {
@@ -42,7 +36,6 @@ try {
   redis = null;
 }
 
-// Helper to check Redis availability
 function isRedisReady() {
   return redis && redis.isOpen;
 }
@@ -52,9 +45,10 @@ function isRedisReady() {
 // ─────────────────────────────────────────────
 const QUEUE_VIDEO = 'queue:video';
 const QUEUE_AUDIO = 'queue:audio';
-const queueKey = (audioOnly) => audioOnly ? QUEUE_AUDIO : QUEUE_VIDEO;
-const matchKey = (identity)  => `match:${identity}`;
-const roomKey = (room)        => `room:${room}`;
+const queueKey   = (audioOnly) => audioOnly ? QUEUE_AUDIO : QUEUE_VIDEO;
+const matchKey   = (identity)  => `match:${identity}`;
+const roomKey    = (room)      => `room:${room}`;
+const productKey = (room)      => `product:${room}`;   // ← NEW
 
 // ─────────────────────────────────────────────
 // TOKEN HELPER
@@ -66,34 +60,27 @@ async function createToken({ identity, room, canPublish = false, canSubscribe = 
 }
 
 // ─────────────────────────────────────────────
-// MATCH — random 1-on-1 call
-// GET /match?identity=xxx&audioOnly=false
-// ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-// MATCH — random 1-on-1 call
+// MATCH
 // GET /match?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
 app.get('/match', async (req, res) => {
   if (!isRedisReady()) {
     return res.status(503).json({ error: 'Matchmaking temporarily unavailable (Redis down)' });
   }
- 
+
   const identity  = req.query.identity  || `user_${randomUUID()}`;
   const audioOnly = req.query.audioOnly === 'true';
   const key       = queueKey(audioOnly);
- 
+
   try {
     const waitingRaw = await redis.lPop(key);
- 
+
     if (waitingRaw) {
       const waiting = JSON.parse(waitingRaw);
- 
+
       if (waiting.identity === identity) {
-        // FIX: same device — put entry back, do NOT fall through to re-queue self
         await redis.rPush(key, waitingRaw);
-        // intentionally falls through to the duplicate-check below
       } else {
-        // Different user — create room and match immediately
         const room   = `call_${randomUUID()}`;
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
         const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
@@ -107,28 +94,22 @@ app.get('/match', async (req, res) => {
         return res.json({ token: token2, room, matched: true });
       }
     }
- 
-    // FIX: check if this identity is already in the queue before adding
-    // prevents duplicate entries from retries, skips, or race conditions
+
     const existing      = await redis.lRange(key, 0, -1);
     const alreadyQueued = existing.some(item => JSON.parse(item).identity === identity);
- 
+
     if (!alreadyQueued) {
-      await redis.rPush(key, JSON.stringify({
-        identity,
-        audioOnly,
-        joinedAt: Date.now()
-      }));
+      await redis.rPush(key, JSON.stringify({ identity, audioOnly, joinedAt: Date.now() }));
       console.log(`🔍 Queued: ${identity} (audioOnly=${audioOnly})`);
     } else {
       console.log(`⚠️  Already queued: ${identity} — skipping duplicate push`);
     }
- 
+
     const TIMEOUT  = 30_000;
     const INTERVAL = 600;
     const deadline = Date.now() + TIMEOUT;
     let resolved   = false;
- 
+
     req.on('close', async () => {
       if (resolved) return;
       resolved = true;
@@ -145,11 +126,11 @@ app.get('/match', async (req, res) => {
         console.error('❌ cleanup on close error:', e.message);
       }
     });
- 
+
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, INTERVAL));
       if (resolved) return;
- 
+
       const resultRaw = await redis.get(matchKey(identity));
       if (resultRaw) {
         resolved = true;
@@ -158,7 +139,7 @@ app.get('/match', async (req, res) => {
         return res.json(JSON.parse(resultRaw));
       }
     }
- 
+
     if (!resolved) {
       resolved = true;
       try {
@@ -175,12 +156,13 @@ app.get('/match', async (req, res) => {
       console.log(`⏰ Match timeout: ${identity}`);
       return res.status(408).json({ error: 'No match found, try again' });
     }
- 
+
   } catch (e) {
     console.error('❌ /match error:', e);
     res.status(500).json({ error: e.message });
   }
 });
+
 // ─────────────────────────────────────────────
 // CANCEL MATCH
 // GET /cancelMatch?identity=xxx&audioOnly=false
@@ -212,7 +194,7 @@ app.get('/cancelMatch', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// QUEUE STATUS  (debug)
+// QUEUE STATUS
 // GET /queueStatus
 // ─────────────────────────────────────────────
 app.get('/queueStatus', async (req, res) => {
@@ -252,7 +234,6 @@ app.get('/getToken', async (req, res) => {
       await redis.set(`title:${room}`, title, { EX: 86400 });
       console.log(`✅ Title saved: title:${room} = "${title}"`);
 
-      // ✅ Only save cover if one was passed — don't overwrite the upload
       if (coverImage) {
         await redis.set(`cover:${room}`, coverImage, { EX: 86400 });
         console.log(`✅ Cover saved: cover:${room} = "${coverImage}"`);
@@ -313,78 +294,147 @@ app.get('/getCallToken', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ACTIVE PUBLIC STREAMS — FIXED BigInt serialization
+// ACTIVE STREAMS
 // GET /activeStreams
 // ─────────────────────────────────────────────
 app.get('/activeStreams', async (req, res) => {
   try {
     const rooms = await roomService.listRooms();
-    
+
     const liveRooms = rooms.filter(r =>
       r.name.startsWith("live_") && r.numParticipants > 0
     );
 
-    console.log(`📡 Live rooms: ${liveRooms.map(r => r.name)}`); // ← add
+    console.log(`📡 Live rooms: ${liveRooms.map(r => r.name)}`);
 
     const streams = await Promise.all(
       liveRooms.map(async (r) => {
-        const title = isRedisReady()
-          ? (await redis.get(`title:${r.name}`)) || ""
-          : "";
-          const cover = isRedisReady()
-      ? (await redis.get(`cover:${r.name}`)) || "" : "";  // ← add
-        
-        console.log(`🏷️  Room: ${r.name}, Title: "${title}"`); // ← add
-        
+        const [title, cover] = isRedisReady()
+          ? await Promise.all([
+              redis.get(`title:${r.name}`),
+              redis.get(`cover:${r.name}`)
+            ])
+          : ["", ""];
+
+        console.log(`🏷️  Room: ${r.name}, Title: "${title}"`);
+
         return {
-          room: r.name,
+          room:         r.name,
           participants: r.numParticipants,
-          title,
-            cover,
-          createdAt: r.creationTime ? Number(r.creationTime) : null
+          title:        title  || "",
+          cover:        cover  || "",
+          createdAt:    r.creationTime ? Number(r.creationTime) : null
         };
       })
     );
 
-    console.log(`📤 Sending streams:`, JSON.stringify(streams)); // ← add
+    console.log(`📤 Sending streams:`, JSON.stringify(streams));
     res.json({ streams });
+
   } catch (e) {
     console.error("❌ ACTIVE STREAMS ERROR:", e);
     res.status(500).json({ error: e.message });
   }
 });
+
 // ─────────────────────────────────────────────
-// DELETE ROOM — called by app on crash/exit
+// PIN PRODUCT  ← NEW
+// Host calls this to feature a product in the live chat card.
+// Pass an empty name to unpin / hide the card for viewers.
+//
+// POST /pinProduct
+// Body: { room, name, price, originalPrice, discount, emoji }
+// ─────────────────────────────────────────────
+app.post('/pinProduct', async (req, res) => {
+  try {
+    const { room, name = "", price = "", originalPrice = "", discount = "", emoji = "🛍️" } = req.body;
+
+    if (!room)                     return res.status(400).json({ error: "room is required" });
+    if (!room.startsWith("live_")) return res.status(403).json({ error: "Not a livestream room" });
+
+    if (!isRedisReady()) {
+      return res.status(503).json({ error: "Redis unavailable — cannot pin product" });
+    }
+
+    if (!name.trim()) {
+      // Empty name → unpin (delete the key so getProduct returns nothing)
+      await redis.del(productKey(room));
+      console.log(`📦 Product unpinned for ${room}`);
+      return res.json({ pinned: false, room });
+    }
+
+    const payload = { name, price, originalPrice, discount, emoji };
+    await redis.set(productKey(room), JSON.stringify(payload), { EX: 86400 });
+    console.log(`📦 Product pinned for ${room}:`, payload);
+    res.json({ pinned: true, room, product: payload });
+
+  } catch (e) {
+    console.error("❌ /pinProduct error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET PRODUCT  ← NEW
+// Viewers poll / fetch this once after joining to hydrate the product card.
+//
+// GET /getProduct?room=live_xxx
+// Response: { product: { name, price, originalPrice, discount, emoji } }
+//           or { product: null } when nothing is pinned
+// ─────────────────────────────────────────────
+app.get('/getProduct', async (req, res) => {
+  try {
+    const room = req.query.room;
+
+    if (!room)                     return res.status(400).json({ error: "room is required" });
+    if (!room.startsWith("live_")) return res.status(403).json({ error: "Not a livestream room" });
+
+    if (!isRedisReady()) {
+      return res.json({ product: null });
+    }
+
+    const raw = await redis.get(productKey(room));
+    res.json({ product: raw ? JSON.parse(raw) : null });
+
+  } catch (e) {
+    console.error("❌ /getProduct error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE ROOM
 // POST /deleteRoom?room=call_xxx
 // ─────────────────────────────────────────────
 app.post('/deleteRoom', async (req, res) => {
   const room = req.query.room || req.body?.room;
   if (!room) return res.status(400).json({ error: 'room required' });
- 
+
   if (!room.startsWith('call_') && !room.startsWith('live_')) {
     return res.status(403).json({ error: 'Not allowed' });
   }
- 
+
   try {
     await roomService.deleteRoom(room);
+    // Clean up product pin when room is explicitly deleted
+    if (isRedisReady()) await redis.del(productKey(room));
     console.log(`🗑️  Room deleted on app exit: ${room}`);
     res.json({ deleted: true, room });
   } catch (e) {
-    // Already gone — treat as success
     console.warn(`⚠️  deleteRoom (already gone?): ${room} — ${e.message}`);
     res.json({ deleted: true, room, note: 'already gone' });
   }
 });
- 
+
 // ─────────────────────────────────────────────
-// REMOVE PARTICIPANT — kick a specific identity
+// REMOVE PARTICIPANT
 // POST /removeParticipant?room=call_xxx&identity=yyy
 // ─────────────────────────────────────────────
 app.post('/removeParticipant', async (req, res) => {
   const room     = req.query.room     || req.body?.room;
   const identity = req.query.identity || req.body?.identity;
   if (!room || !identity) return res.status(400).json({ error: 'room and identity required' });
- 
+
   try {
     await roomService.removeParticipant(room, identity);
     console.log(`👟 Kicked ${identity} from ${room}`);
@@ -395,11 +445,8 @@ app.post('/removeParticipant', async (req, res) => {
   }
 });
 
-
 // ─────────────────────────────────────────────
 // GHOST ROOM SWEEPER
-// Every 2 min: delete any call_ room with 0 participants
-// This catches crashes the app never reported
 // ─────────────────────────────────────────────
 async function sweepGhostRooms() {
   try {
@@ -411,78 +458,65 @@ async function sweepGhostRooms() {
       await roomService.deleteRoom(r.name);
       console.log(`🧹 Swept ghost room: ${r.name}`);
     }
-    if (ghosts.length > 0) {
-      console.log(`🧹 Swept ${ghosts.length} ghost room(s)`);
-    }
+    if (ghosts.length > 0) console.log(`🧹 Swept ${ghosts.length} ghost room(s)`);
   } catch (e) {
     console.error('❌ sweepGhostRooms error:', e.message);
   }
 }
 
-
-// Store covers in /uploads folder
+// ─────────────────────────────────────────────
+// COVER UPLOAD
+// POST /uploadCover?room=live_xxx
+// ─────────────────────────────────────────────
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const dir = path.join(__dirname, 'uploads');
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-        cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-        const room = req.query.room || `cover_${Date.now()}`;
-        cb(null, `${room}.jpg`);
-    }
+  destination: (req, file, cb) => {
+    const dir = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const room = req.query.room || `cover_${Date.now()}`;
+    cb(null, `${room}.jpg`);
+  }
 });
 
-const upload = multer({
-    storage,
-    limits: { fileSize: 5 * 1024 * 1024 }  // 5MB max
-});
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-// Serve uploaded images statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ── Upload cover image ──────────────────────
-// POST /uploadCover?room=live_xxx
 app.post('/uploadCover', upload.single('cover'), async (req, res) => {
-    try {
-        if (!req.file) return res.status(400).json({ error: 'No file' });
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
 
-        const room = req.query.room;
-        const host = `${req.protocol}://${req.get('host')}`;
-        const url  = `${host}/uploads/${req.file.filename}`;
+    const room = req.query.room;
+    const host = `${req.protocol}://${req.get('host')}`;
+    const url  = `${host}/uploads/${req.file.filename}`;
 
-        // ✅ Save cover URL to Redis immediately on upload
-        if (room && isRedisReady()) {
-            await redis.set(`cover:${room}`, url, { EX: 86400 });
-            console.log(`✅ Cover saved to Redis: cover:${room} = "${url}"`);
-        }
-
-        console.log(`🖼️  Cover uploaded for ${room}: ${url}`);
-        res.json({ url });
-
-    } catch (e) {
-        console.error('❌ uploadCover error:', e);
-        res.status(500).json({ error: e.message });
+    if (room && isRedisReady()) {
+      await redis.set(`cover:${room}`, url, { EX: 86400 });
+      console.log(`✅ Cover saved to Redis: cover:${room} = "${url}"`);
     }
+
+    console.log(`🖼️  Cover uploaded for ${room}: ${url}`);
+    res.json({ url });
+
+  } catch (e) {
+    console.error('❌ uploadCover error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
-// Run once on startup then every 2 minutes
+
 sweepGhostRooms();
 setInterval(sweepGhostRooms, 2 * 60 * 1000);
-// ─────────────────────────────────────────────
-// WAKES UP THE SERVER (prevents cold start on platforms like Heroku)
-// ─────────────────────────────────────────────
-app.get('/ping', (req, res) => {
-  res.json({ ok: true });
-});
-// ─────────────────────────────────────────────
-// HEALTH CHECK
-// ─────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: "LiveKit + Redis server running ✅" });
-});
 
 // ─────────────────────────────────────────────
-// START SERVER
+// PING / HEALTH
+// ─────────────────────────────────────────────
+app.get('/ping', (req, res) => res.json({ ok: true }));
+app.get('/', (req, res) => res.json({ status: "LiveKit + Redis server running ✅" }));
+
+// ─────────────────────────────────────────────
+// START
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
@@ -491,13 +525,16 @@ app.listen(PORT, "0.0.0.0", () => {
 🚀 Server running on port ${PORT}
 
 Endpoints:
-  GET /match              → random 1-on-1 matching
-  GET /cancelMatch        → leave the queue
-  GET /queueStatus        → debug: who is waiting
-  GET /getToken           → livestream host token
-  GET /getViewerToken     → livestream viewer token
-  GET /getCallToken       → private call token
-  GET /activeStreams      → list live public streams
-  GET /                   → health check
+  GET  /match              → random 1-on-1 matching
+  GET  /cancelMatch        → leave the queue
+  GET  /queueStatus        → debug: who is waiting
+  GET  /getToken           → livestream host token
+  GET  /getViewerToken     → livestream viewer token
+  GET  /getCallToken       → private call token
+  GET  /activeStreams       → list live public streams
+  POST /pinProduct          → host pins a product card  ← NEW
+  GET  /getProduct          → viewer fetches pinned product  ← NEW
+  GET  /ping               → wake-up ping
+  GET  /                   → health check
   `);
 });
