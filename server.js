@@ -8,7 +8,17 @@ const fs     = require('fs');
 
 const app = express();
 app.use(express.json());
+// ─────────────────────────────────────────────
+// FIREBASE ADMIN (for FCM notifications)
+// ─────────────────────────────────────────────
+const admin = require('firebase-admin');
+const serviceAccount = require('./serviceAccount.json');
 
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+console.log('✅ Firebase Admin initialized');
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
@@ -508,7 +518,101 @@ app.post('/uploadCover', upload.single('cover'), async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// ─────────────────────────────────────────────
+// SAVE FCM TOKEN
+// POST /saveFcmToken
+// Body: { userId, token }
+// ─────────────────────────────────────────────
+app.post('/saveFcmToken', async (req, res) => {
+  try {
+    const { userId, token } = req.body;
+    if (!userId || !token) {
+      return res.status(400).json({ error: 'userId and token required' });
+    }
 
+    // Save token to Redis with 30-day expiry
+    if (isRedisReady()) {
+      await redis.set(`fcm:${userId}`, token, { EX: 30 * 24 * 3600 });
+      console.log(`✅ FCM token saved for user: ${userId}`);
+    }
+
+    res.json({ saved: true });
+  } catch (e) {
+    console.error('❌ /saveFcmToken error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// SEND CHAT NOTIFICATION
+// POST /sendChatNotification
+// Body: { toUserId, fromName, message, roomId }
+// ─────────────────────────────────────────────
+app.post('/sendChatNotification', async (req, res) => {
+  try {
+    const { toUserId, fromName, message, roomId } = req.body;
+    if (!toUserId || !fromName || !message || !roomId) {
+      return res.status(400).json({ error: 'toUserId, fromName, message, roomId required' });
+    }
+
+    // Get FCM token from Redis
+    if (!isRedisReady()) {
+      return res.status(503).json({ error: 'Redis unavailable' });
+    }
+
+    const fcmToken = await redis.get(`fcm:${toUserId}`);
+    if (!fcmToken) {
+      console.log(`⚠️  No FCM token found for user: ${toUserId}`);
+      return res.json({ sent: false, reason: 'No FCM token for this user' });
+    }
+
+    // Send FCM notification
+    const fcmMessage = {
+      token: fcmToken,
+      notification: {
+        title: `💬 ${fromName}`,
+        body: message,
+      },
+      data: {
+        roomId:  roomId,
+        type:    'chat',
+        fromName: fromName
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound:     'default',
+          channelId: 'chat_messages',
+          clickAction: 'OPEN_CHAT'
+        }
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1
+          }
+        }
+      }
+    };
+
+    const result = await admin.messaging().send(fcmMessage);
+    console.log(`📲 Notification sent to ${toUserId}: ${result}`);
+    res.json({ sent: true, messageId: result });
+
+  } catch (e) {
+    // Token expired or invalid — clean it up
+    if (e.code === 'messaging/registration-token-not-registered') {
+      if (isRedisReady()) {
+        await redis.del(`fcm:${req.body.toUserId}`);
+        console.log(`🗑️  Removed expired FCM token for: ${req.body.toUserId}`);
+      }
+      return res.json({ sent: false, reason: 'Token expired, removed' });
+    }
+    console.error('❌ /sendChatNotification error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 sweepGhostRooms();
 setInterval(sweepGhostRooms, 2 * 60 * 1000);
 
