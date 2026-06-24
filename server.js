@@ -12,12 +12,12 @@ app.use(express.json());
 // FIREBASE ADMIN (for FCM notifications)
 // ─────────────────────────────────────────────
 const admin = require('firebase-admin');
-const serviceAccount = require('./serviceAccount.json');
+// NEW
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
-
 console.log('✅ Firebase Admin initialized');
 // ─────────────────────────────────────────────
 // CONFIG
@@ -621,7 +621,19 @@ setInterval(sweepGhostRooms, 2 * 60 * 1000);
 // ─────────────────────────────────────────────
 app.get('/ping', (req, res) => res.json({ ok: true }));
 app.get('/', (req, res) => res.json({ status: "LiveKit + Redis server running ✅" }));
-
+// ─────────────────────────────────────────────
+// KEEP ALIVE
+// ─────────────────────────────────────────────
+const https = require('https');
+if (process.env.RENDER_EXTERNAL_URL) {
+  setInterval(() => {
+    https.get(`${process.env.RENDER_EXTERNAL_URL}/ping`, (res) => {
+      console.log(`🏓 Self-ping: ${res.statusCode}`);
+    }).on('error', (e) => {
+      console.error('❌ Self-ping failed:', e.message);
+    });
+  }, 10 * 60 * 1000);
+}
 // ─────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────
