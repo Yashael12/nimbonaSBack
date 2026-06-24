@@ -12,13 +12,26 @@ app.use(express.json());
 // FIREBASE ADMIN (for FCM notifications)
 // ─────────────────────────────────────────────
 const admin = require('firebase-admin');
-// NEW
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-console.log('✅ Firebase Admin initialized');
+let serviceAccount = {};
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+} catch (e) {
+  console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT:', e.message);
+}
+
+if (serviceAccount.project_id) {
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('✅ Firebase Admin initialized');
+  } catch (e) {
+    console.error('❌ Firebase Admin init failed:', e.message);
+  }
+} else {
+  console.error('❌ FIREBASE_SERVICE_ACCOUNT missing or invalid');
+}
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
