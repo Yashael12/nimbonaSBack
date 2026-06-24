@@ -565,7 +565,8 @@ app.post('/saveFcmToken', async (req, res) => {
 // ─────────────────────────────────────────────
 app.post('/sendChatNotification', async (req, res) => {
   try {
-    const { toUserId, fromName, message, roomId } = req.body;
+    const { toUserId, fromName, message, roomId, soundEnabled = true, 
+      vibrationEnabled = true } = req.body;
     if (!toUserId || !fromName || !message || !roomId) {
       return res.status(400).json({ error: 'toUserId, fromName, message, roomId required' });
     }
@@ -596,8 +597,9 @@ app.post('/sendChatNotification', async (req, res) => {
       android: {
         priority: 'high',
         notification: {
-          sound:     'default',
+         sound:     soundEnabled     ? 'default' : null,
           channelId: 'chat_messages',
+             defaultVibrateTimings: vibrationEnabled,   
           clickAction: 'OPEN_CHAT'
         }
       },
