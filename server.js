@@ -14,7 +14,11 @@ app.use(express.json());
 // ─────────────────────────────────────────────
 // FIREBASE ADMIN (for FCM notifications)
 // ─────────────────────────────────────────────
-const admin = require('firebase-admin');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
+
+let firebaseReady = false;
+let messaging = null;
 
 let serviceAccount = {};
 try {
@@ -25,9 +29,9 @@ try {
 
 if (serviceAccount.project_id) {
   try {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
+    initializeApp({ credential: cert(serviceAccount) });
+    messaging = getMessaging();
+    firebaseReady = true;
     console.log('✅ Firebase Admin initialized');
   } catch (e) {
     console.error('❌ Firebase Admin init failed:', e.message);
@@ -615,7 +619,10 @@ app.post('/sendChatNotification', async (req, res) => {
     };
 
   // NEW
-const result = await admin.messaging().send(fcmMessage);
+   if (!firebaseReady || !messaging) {
+  return res.status(503).json({ error: 'Firebase messaging not available' });
+}
+const result = await messaging.send(fcmMessage);
     console.log(`📲 Notification sent to ${toUserId}: ${result}`);
     res.json({ sent: true, messageId: result });
 
