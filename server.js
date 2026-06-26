@@ -661,6 +661,38 @@ if (process.env.RENDER_EXTERNAL_URL) {
   }, 10 * 60 * 1000);
 }
 // ─────────────────────────────────────────────
+// ONLINE COUNT
+// GET /onlineCount
+// Returns total unique participants across all active rooms
+// ─────────────────────────────────────────────
+app.get('/onlineCount', async (req, res) => {
+  try {
+    const [rooms, queueVideo, queueAudio] = await Promise.all([
+      roomService.listRooms(),
+      isRedisReady() ? redis.lLen(QUEUE_VIDEO) : Promise.resolve(0),
+      isRedisReady() ? redis.lLen(QUEUE_AUDIO) : Promise.resolve(0),
+    ]);
+
+    // Sum participants in all active rooms
+    const inCall = rooms.reduce((sum, r) => sum + Number(r.numParticipants), 0);
+
+    // People waiting in queue are also "online"
+    const inQueue = queueVideo + queueAudio;
+
+    const total = inCall + inQueue;
+
+    res.json({
+      total,
+      inCall,
+      inQueue,
+      rooms: rooms.length,
+    });
+  } catch (e) {
+    console.error('❌ /onlineCount error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+// ─────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
