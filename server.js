@@ -99,6 +99,7 @@ app.get('/match', async (req, res) => {
   }
 
   const identity  = req.query.identity  || `user_${randomUUID()}`;
+    const displayName = req.query.displayName || identity; // nouveau paramètre
   const audioOnly = req.query.audioOnly === 'true';
   const key       = queueKey(audioOnly);
 
@@ -115,24 +116,29 @@ app.get('/match', async (req, res) => {
         const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
         const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
         await redis.set(roomKey(room), '2', { EX: 600 });
-        await redis.set(
-          matchKey(waiting.identity),
-          JSON.stringify({ token: token1, room, matched: true }),
-          { EX: 120 }
-        );
+         const matchData = {
+          token: token1,
+          room,
+          matched: true,
+          partnerName: displayName  // le nom de l'appelant
+        };
+        await redis.set(matchKey(waiting.identity), JSON.stringify(matchData), { EX: 120 });
         console.log(`✅ Matched: ${waiting.identity} ↔ ${identity} → ${room}`);
-        return res.json({ token: token2, room, matched: true });
+     return res.json({
+          token: token2,
+          room,
+          matched: true,
+          partnerName: waiting.displayName || waiting.identity
+        });
       }
     }
 
-    const existing      = await redis.lRange(key, 0, -1);
-    const alreadyQueued = existing.some(item => JSON.parse(item).identity === identity);
-
+    // const existing      = await redis.lRange(key, 0, -1);
+     const alreadyQueued = await redis.lRange(key, 0, -1).then(list =>
+      list.some(item => JSON.parse(item).identity === identity)
+    );
     if (!alreadyQueued) {
-      await redis.rPush(key, JSON.stringify({ identity, audioOnly, joinedAt: Date.now() }));
-      console.log(`🔍 Queued: ${identity} (audioOnly=${audioOnly})`);
-    } else {
-      console.log(`⚠️  Already queued: ${identity} — skipping duplicate push`);
+      await redis.rPush(key, JSON.stringify({ identity, displayName, audioOnly, joinedAt: Date.now() }));
     }
 
     const TIMEOUT  = 30_000;
