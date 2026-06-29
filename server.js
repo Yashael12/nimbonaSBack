@@ -93,15 +93,21 @@ async function createToken({ identity, room, canPublish = false, canSubscribe = 
 // MATCH
 // GET /match?identity=xxx&audioOnly=false
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// MATCH
+// GET /match?identity=xxx&audioOnly=false
+// ─────────────────────────────────────────────
 app.get('/match', async (req, res) => {
   if (!isRedisReady()) {
-    return res.status(503).json({ error: 'Matchmaking temporarily unavailable (Redis down)' });
+    return res.status(503).json({
+      error: 'Matchmaking temporarily unavailable (Redis down)'
+    });
   }
 
-  const identity  = req.query.identity  || `user_${randomUUID()}`;
-    const displayName = req.query.displayName || identity; // nouveau paramètre
+  const identity = req.query.identity || `user_${randomUUID()}`;
+  const displayName = req.query.displayName || identity;
   const audioOnly = req.query.audioOnly === 'true';
-  const key       = queueKey(audioOnly);
+  const key = queueKey(audioOnly);
 
   try {
     const waitingRaw = await redis.lPop(key);
@@ -109,88 +115,143 @@ app.get('/match', async (req, res) => {
     if (waitingRaw) {
       const waiting = JSON.parse(waitingRaw);
 
+      // Prevent self-match
       if (waiting.identity === identity) {
         await redis.rPush(key, waitingRaw);
       } else {
-        const room   = `call_${randomUUID()}`;
-        const token1 = await createToken({ identity: waiting.identity, room, canPublish: true, canSubscribe: true });
-        const token2 = await createToken({ identity, room, canPublish: true, canSubscribe: true });
-        await redis.set(roomKey(room), '2', { EX: 600 });
-         const matchData = {
-          token: token1,
+
+        const room = `call_${randomUUID()}`;
+
+        const token1 = await createToken({
+          identity: waiting.identity,
           room,
-          matched: true,
-          partnerName: displayName  // le nom de l'appelant
-        };
-        await redis.set(matchKey(waiting.identity), JSON.stringify(matchData), { EX: 120 });
-        console.log(`✅ Matched: ${waiting.identity} ↔ ${identity} → ${room}`);
-     return res.json({
+          canPublish: true,
+          canSubscribe: true
+        });
+
+        const token2 = await createToken({
+          identity,
+          room,
+          canPublish: true,
+          canSubscribe: true
+        });
+
+        await redis.set(roomKey(room), '2', { EX: 600 });
+
+        const waitingPartnerName =
+          waiting.displayName || waiting.identity;
+
+        const currentPartnerName =
+          displayName || identity;
+
+        // Result for waiting user
+        await redis.set(
+          matchKey(waiting.identity),
+          JSON.stringify({
+            token: token1,
+            room,
+            matched: true,
+            partnerName: currentPartnerName
+          }),
+          { EX: 120 }
+        );
+
+        console.log(
+          `✅ Matched: ${waitingPartnerName} ↔ ${currentPartnerName}`
+        );
+
+        // Result for current user
+        return res.json({
           token: token2,
           room,
           matched: true,
-          partnerName: waiting.displayName || waiting.identity
+          partnerName: waitingPartnerName
         });
       }
     }
 
-    // const existing      = await redis.lRange(key, 0, -1);
-     const alreadyQueued = await redis.lRange(key, 0, -1).then(list =>
-      list.some(item => JSON.parse(item).identity === identity)
-    );
+    // Check if already queued
+    const alreadyQueued = await redis
+      .lRange(key, 0, -1)
+      .then(list =>
+        list.some(item => JSON.parse(item).identity === identity)
+      );
+
     if (!alreadyQueued) {
-      await redis.rPush(key, JSON.stringify({ identity, displayName, audioOnly, joinedAt: Date.now() }));
+      await redis.rPush(
+        key,
+        JSON.stringify({
+          identity,
+          displayName,
+          audioOnly,
+          joinedAt: Date.now()
+        })
+      );
     }
 
-    const TIMEOUT  = 30_000;
+    const TIMEOUT = 30000;
     const INTERVAL = 600;
     const deadline = Date.now() + TIMEOUT;
-    let resolved   = false;
+
+    let resolved = false;
 
     req.on('close', async () => {
       if (resolved) return;
+
       resolved = true;
+
       try {
         const items = await redis.lRange(key, 0, -1);
+
         for (const item of items) {
           if (JSON.parse(item).identity === identity) {
             await redis.lRem(key, 1, item);
             break;
           }
         }
-        console.log(`📴 Client disconnected: ${identity} removed from queue`);
       } catch (e) {
-        console.error('❌ cleanup on close error:', e.message);
+        console.error("cleanup error:", e.message);
       }
     });
 
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, INTERVAL));
+
       if (resolved) return;
 
       const resultRaw = await redis.get(matchKey(identity));
+
       if (resultRaw) {
         resolved = true;
+
         await redis.del(matchKey(identity));
-        console.log(`📬 Delivered match result to: ${identity}`);
-        return res.json(JSON.parse(resultRaw));
+
+        const result = JSON.parse(resultRaw);
+
+        console.log(
+          `📬 ${identity} matched with ${result.partnerName}`
+        );
+
+        return res.json(result);
       }
     }
 
+    // Timeout
     if (!resolved) {
       resolved = true;
-      try {
-        const items = await redis.lRange(key, 0, -1);
-        for (const item of items) {
-          if (JSON.parse(item).identity === identity) {
-            await redis.lRem(key, 1, item);
-            break;
-          }
+
+      const items = await redis.lRange(key, 0, -1);
+
+      for (const item of items) {
+        if (JSON.parse(item).identity === identity) {
+          await redis.lRem(key, 1, item);
+          break;
         }
-      } catch (e) {
-        console.error('❌ cleanup on timeout error:', e.message);
       }
-      console.log(`⏰ Match timeout: ${identity}`);
-      return res.status(408).json({ error: 'No match found, try again' });
+
+      return res.status(408).json({
+        error: 'No match found, try again'
+      });
     }
 
   } catch (e) {
@@ -198,7 +259,6 @@ app.get('/match', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
 // ─────────────────────────────────────────────
 // CANCEL MATCH
 // GET /cancelMatch?identity=xxx&audioOnly=false
