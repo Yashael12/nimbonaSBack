@@ -759,6 +759,61 @@ app.get('/onlineCount', async (req, res) => {
   }
 });
 // ─────────────────────────────────────────────
+// SEND CALL INVITE
+// POST /sendCallInvite
+// Body: { toUserId, fromUid, fromName, room }
+// ─────────────────────────────────────────────
+app.post('/sendCallInvite', async (req, res) => {
+  try {
+    const { toUserId, fromUid, fromName, room } = req.body;
+    if (!toUserId || !fromUid || !fromName || !room) {
+      return res.status(400).json({ error: 'toUserId, fromUid, fromName, room required' });
+    }
+
+    if (!isRedisReady()) {
+      return res.status(503).json({ error: 'Redis unavailable' });
+    }
+
+    const fcmToken = await redis.get(`fcm:${toUserId}`);
+    if (!fcmToken) {
+      return res.json({ sent: false, reason: 'No FCM token for this user' });
+    }
+
+    if (!firebaseReady || !messaging) {
+      return res.status(503).json({ error: 'Firebase messaging not available' });
+    }
+
+    const fcmMessage = {
+      token: fcmToken,
+      data: {
+        type: 'call_invite',
+        room: room,
+        fromUid: fromUid,
+        fromName: fromName
+      },
+      android: {
+        priority: 'high'
+      },
+      apns: {
+        headers: { 'apns-priority': '10' },
+        payload: { aps: { 'content-available': 1 } }
+      }
+    };
+
+    const result = await messaging.send(fcmMessage);
+    console.log(`📞 Call invite sent to ${toUserId} from ${fromName} for room ${room}`);
+    res.json({ sent: true, messageId: result });
+
+  } catch (e) {
+    if (e.code === 'messaging/registration-token-not-registered') {
+      if (isRedisReady()) await redis.del(`fcm:${req.body.toUserId}`);
+      return res.json({ sent: false, reason: 'Token expired, removed' });
+    }
+    console.error('❌ /sendCallInvite error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+// ─────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
