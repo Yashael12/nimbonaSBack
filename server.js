@@ -829,6 +829,7 @@ Endpoints:
   GET  /getToken           → livestream host token
   GET  /getViewerToken     → livestream viewer token
   GET  /getCallToken       → private call token
+  GET  /onlineCount       → total users online
   GET  /activeStreams       → list live public streams
   POST /pinProduct          → host pins a product card  ← NEW
   GET  /getProduct          → viewer fetches pinned product  ← NEW
